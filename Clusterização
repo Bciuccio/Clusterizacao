@@ -1,0 +1,304 @@
+#Instalando os dados necessarios
+!pip install sidetable
+!pip install ydata_profiling
+%pip install plotly
+%pip install cufflinks
+%pip install chart-studio
+
+#Importando as Bibliotecas necessarias
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import sidetable
+import missingno as msno
+import chart_studio.plotly as py
+import cufflinks as cf
+import plotly.graph_objects as go
+import plotly.express as px
+
+from ydata_profiling import ProfileReport
+from ipywidgets import interact, widgets
+from sklearn import datasets
+from sklearn.preprocessing import scale, minmax_scale
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+
+
+#Baixando os dados
+try:
+    df = pd.read_csv('/content/drive/MyDrive/Desafio 07/data.csv', encoding='utf-8')
+     # tentando ler com UTF-8 primeiro
+except UnicodeDecodeError:
+    df = pd.read_csv('/content/drive/MyDrive/Desafio 07/data.csv', encoding='latin-1')
+    # se UTF-8 falhar, tente latin-1
+df.head()
+
+#1 Analise Exploratoria dos dados
+#retirando as informações sobre os dados
+df.info()
+
+#1 Analise Exploratoria dos dados
+#Usando o profile report para verificar o dataframe
+df.profile_report()
+
+
+A partir da analise do Profile Report podemos concluir alguns pontos:
+
+A coluna CustomerID, possui alguns dados nulos que precisam ser excluidos do nosso dataset, para assim tarzermos melhor padronização aos dados.
+
+Tambem foi observados divesas duplicatas no dataset que precisam ser removidas
+
+Tambem iremos modificar a coluna CustomerID de objeto para inteiro a fim de podermos utilizarmos a mesma caso seja necessario para futura analise.
+
+Foi observado tambem nas coluna numericas valores distoantes e negativos em que um processo de remoção de ouliers se faz extremamente necesario para retirar esses dados que podem compometer a analise
+
+#2 Tratamento dos dados
+#removendo os valores nulos, definindo um subset
+df = df.dropna(subset=['CustomerID'])
+df.info()
+
+
+#2 Tratamento dos dados
+# Remover duplicatas
+df = df.drop_duplicates()
+
+# Remover outliers (utilizando o método IQR)
+def remove_outliers(df, column):
+    Q1 = df[column].quantile(0.25)
+    Q3 = df[column].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    return df[(df[column] >= lower_bound) & (df[column] <= upper_bound)]
+
+# Aplicando a remoção de outliers nas colunas numéricas
+df = remove_outliers(df, 'Quantity')
+df = remove_outliers(df, 'UnitPrice')
+
+# Remover dados inconsistentes
+# Remover transações com Quantity <= 0 e UnitPrice <= 0
+df = df[(df['Quantity'] > 0) & (df['UnitPrice'] > 0)]
+
+
+df.info()
+
+#2 Tratamento dos dados
+# Garantir que CustomerID seja um número válido (removendo valores nulos e convertendo para inteiro)
+if 'CustomerID' in df.columns:
+    df = df.dropna(subset=['CustomerID'])
+    df['CustomerID'] = df['CustomerID'].astype(int)
+df.info()
+
+***Escolha das Variáveis***
+
+Quantidade (*Quantity*) e Preço Unitário (*UnitPrice*):
+
+Ambas as variáveis são diretamente relacionadas ao comportamento de compra dos clientes.
+
+**Quantity**: Indica o volume de compras realizadas, permitindo identificar padrões de consumo (por exemplo, grandes compradores versus compradores ocasionais).
+
+**UnitPrice**: Reflete a faixa de preço dos itens adquiridos, ajudando a segmentar clientes que compram produtos de diferentes categorias de preço (produtos premium, intermediários ou econômicos).
+
+Essas variáveis têm uma interpretação clara e forte relação com o objetivo de identificar diferentes perfis de clientes.
+
+Podemos Observar tambem a boa corelação entre ambas ao analisar o HeatMap
+
+Normalização dos Dados:
+
+ Quantidades e preços normalmente possuem escalas muito diferentes. A normalização pelo intervalo [0, 1] com MinMaxScaler foi escolhida para evitar que uma variável (como Quantity, geralmente em valores maiores) domine o processo de clustering.
+
+#3 Normalização dos dados
+# Escalando valores para o intervalo [0, 1]
+scaler = MinMaxScaler()
+numeric_columns = ['Quantity', 'UnitPrice']  # Removido CustomerID, pois por se tratar de um numero identificador unico este poderia gerar ruido na clusterização
+numeric_columns = [col for col in numeric_columns if col in df.columns]
+df[numeric_columns] = scaler.fit_transform(df[numeric_columns])
+
+
+
+# Seleção das variáveis mais relevantes
+selected_columns = numeric_columns
+X = df[selected_columns]
+
+df = X  # Manter apenas as colunas numéricas normalizadas
+
+# Verificar variabilidade nos dados
+if df.var().sum() == 0:
+    raise ValueError("Os dados não possuem variabilidade suficiente para clustering.")
+
+***Escolha do Algoritmo de Clustering***
+
+**K-Means:**
+
+O K-Means é amplamente utilizado para segmentação devido à sua simplicidade e eficiência em dividir os dados em clusters esféricos, baseando-se na minimização da inércia (distância intra-cluster).
+
+*Vantagens:*
+
+*   Escalável para grandes conjuntos de dados.
+*   
+Rápido para executar, mesmo com iterações repetidas.
+
+*Limitação Considerada: *
+
+K-Means assume que os clusters têm formato esférico, o que pode não se aplicar a todos os casos. Porém, dado o escopo das variáveis (Quantity e UnitPrice), a suposição é razoável neste caso.
+
+
+***Escolha do Número de Clusters (k):***
+
+**Método Elbow:**
+
+Ajuda a identificar o ponto onde o ganho na redução de inércia começa a diminuir significativamente ("cotovelo").
+
+**Por que minimizar a inércia:**
+
+O objetivo do K-Means é encontrar clusters que minimizem a inércia, pois clusters mais compactos indicam maior similaridade entre os pontos de dados dentro de cada cluster. Isso significa que o modelo conseguiu identificar grupos bem definidos.
+
+**Método Silhouette:**
+
+Fornece uma métrica adicional para avaliar a qualidade dos clusters, garantindo que eles sejam bem separados e coesos internamente.
+
+**Combinação dos Métodos:**
+
+A combinação garante que o número ideal de clusters seja baseado tanto na separação quanto na coesão dos grupos.
+
+
+
+# 4 Determinação do numero ideal de Clusters
+# Encontrar a quantidade ideal de clusters usando o método Elbow
+inertia = []
+k_range = range(2, 11)
+for k in k_range:
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10, max_iter=300)
+    kmeans.fit(df)
+    inertia.append(kmeans.inertia_)
+
+# Visualizar o gráfico do método Elbow
+plt.plot(k_range, inertia, marker='o')
+plt.xlabel('Número de Clusters')
+plt.ylabel('Inércia')
+plt.title('Método Elbow')
+plt.axvline(x=k_range[np.argmin(inertia)], color='red', linestyle='--', label=f'Escolha: {k_range[np.argmin(inertia)]} clusters')
+plt.legend()
+plt.show()
+
+# Encontrar a quantidade ideal de clusters usando o método Silhouette
+silhouette_scores = []
+kmeans_models = {}
+
+for k in k_range:
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10, max_iter=300)
+    labels = kmeans.fit_predict(df)
+    if len(set(labels)) > 1:  # Garantir que existem pelo menos 2 clusters
+        silhouette_scores.append(silhouette_score(df, labels, sample_size=min(1000, len(df)), random_state=42))
+        kmeans_models[k] = kmeans  # Armazenar modelos treinados
+    else:
+        silhouette_scores.append(-1)  # Penalizar caso não haja clusters suficientes
+
+# Visualizar o gráfico do método Silhouette
+plt.plot(k_range, silhouette_scores, marker='o')
+plt.xlabel('Número de Clusters')
+plt.ylabel('Silhouette Score')
+plt.title('Método Silhouette')
+plt.axvline(x=k_range[np.argmax(silhouette_scores)], color='red', linestyle='--', label=f'Escolha: {k_range[np.argmax(silhouette_scores)]} clusters')
+plt.legend()
+plt.show()
+
+
+# Escolher o melhor número de clusters baseado nos métodos acima
+best_k = k_range[np.argmax(silhouette_scores)]
+
+# Exibir o número de clusters escolhido
+print(f"Número ideal de clusters escolhido: {best_k}")
+
+# Implementar o algoritmo K-Means com o número ideal de clusters
+kmeans = kmeans_models[best_k]
+df['Cluster'] = kmeans.predict(df)
+
+
+# Análise dos clusters
+# Resumo estatístico dos clusters
+cluster_summary = df.groupby('Cluster').mean()
+print("Resumo dos clusters:")
+print(cluster_summary)
+
+# Visualização dos clusters
+df_plot_columns = [col for col in ['Quantity', 'UnitPrice'] if col in df.columns]
+if len(df_plot_columns) == 2:
+    plt.figure(figsize=(8, 6))
+    sns.scatterplot(x=df[df_plot_columns[0]], y=df[df_plot_columns[1]], hue=df['Cluster'], palette='viridis')
+    plt.xlabel(df_plot_columns[0])
+    plt.ylabel(df_plot_columns[1])
+    plt.title('Distribuição dos Clusters')
+    plt.show()
+else:
+    print("Colunas insuficientes para visualização dos clusters.")
+
+***1. Perfil de Compras dos Clientes por Cluster***
+
+**Cluster 0:**
+
+Quantity: Alto (0.860939)
+
+UnitPrice: Baixo (0.145375)
+
+Descrição: Esse grupo representa clientes que compram em grandes quantidades, mas de produtos de baixo valor unitário.
+
+**Cluster 1:**
+
+Quantity: Muito Baixo (0.077996)
+
+UnitPrice: Médio-Baixo (0.230580)
+
+Descrição: Clientes que fazem compras em quantidades muito pequenas e de produtos com preço unitário intermediário.
+
+**Cluster 2:**
+
+Quantity: Baixo (0.100895)
+
+UnitPrice: Alto (0.632595)
+
+Descrição: Clientes que preferem produtos de alto valor unitário, mas compram em pequenas quantidades.
+
+**Cluster 3:**
+
+Quantity: Médio (0.397854)
+
+UnitPrice: Baixo (0.192754)
+
+Descrição: Clientes que compram quantidades intermediárias, priorizando produtos de menor custo.
+
+***2. Utilidade da Análise para Segmentação de Clientes***
+
+A análise de clustering permite identificar diferentes perfis de clientes com base no comportamento de compra.
+
+Esses insights podem ajudar a empresa a:
+
+Segmentar a base de clientes em grupos homogêneos para ações específicas.
+Personalizar campanhas de marketing, destacando produtos e promoções que sejam mais relevantes para cada segmento.
+
+Otimizar o gerenciamento de estoque, ajustando a oferta de produtos de acordo com a demanda de cada grupo.
+
+***3. Ações Sugeridas Baseadas nos Resultados***
+
+**Cluster 0:**
+
+Ação: Oferecer promoções por volume ou descontos progressivos para aumentar ainda mais a lealdade desse grupo, focado em compras em grande quantidade.
+Estratégia de Comunicação: Enviar catálogos de produtos em oferta, destacando as vantagens de comprar em grande escala.
+
+**Cluster 1:**
+
+Ação: Focar em campanhas que incentivem o aumento do volume de compras, como "compre mais e ganhe brindes".
+Estratégia de Comunicação: Marketing baseado em fidelidade, oferecendo benefícios para compras frequentes.
+
+**Cluster 2:**
+
+Ação: Destacar produtos premium ou edições limitadas que justifiquem os altos preços unitários.
+Estratégia de Comunicação: Investir em comunicação visual atrativa e experiências exclusivas para esse público.
+
+**Cluster 3:**
+
+Ação: Explorar combos ou pacotes promocionais para elevar o ticket médio.
+Estratégia de Comunicação: Divulgar mensagens focadas em economia e benefícios adicionais de compras intermediárias.
